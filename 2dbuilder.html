@@ -67,15 +67,33 @@
   <div id="ui"></div>
   <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
   <script>
+  /*
+   * 2.5D LEGO Builder
+   * 
+   * Features:
+   * - Smart snapping: checks all bottom studs to find best attachment point
+   * - Brick dragging: pick and move bricks with all dependent bricks
+   * - Particle effects: visual feedback when placing bricks
+   * - 2.5D perspective camera with panning support
+   * - PBR materials with three-point lighting
+   * - Animated 3D preview buttons
+   */
+  
+  // ============================================================================
+  // CONFIGURATION
+  // ============================================================================
+  
+  // Brick dimensions (in world units)
   const STUD = 16;
   const STUD_H = STUD * 0.3;
-  const DEPTH = 2;
+  const BRICK_DEPTH = STUD * 0.8;
+  const PARTICLE_COUNT = 15;
 
   // Vibrant, fun LEGO-style colors
   const COLORS = [
     0xFF0000, // Bright Red
     0x0055BF, // LEGO Blue
-    0xFFD700, // Gold/Yellow
+    // 0xFFD700, // Gold/Yellow
     0x00A650, // Bright Green
     0xFF6700, // Orange
     0xA83D9B, // Purple/Magenta
@@ -83,16 +101,22 @@
     0xFF1493, // Hot Pink
     0x32CD32, // Lime Green
     0xFFFF00, // Yellow
-    0xFF4500, // Red-Orange
-    0x9400D3, // Dark Violet
+    // 0xFF4500, // Red-Orange
+    // 0x9400D3, // Dark Violet
   ];
   const randColor = () => COLORS[Math.floor(Math.random()*COLORS.length)];
 
+  // Available brick types
   const CATALOG = [
     {w:1,h:1}, {w:2,h:1}, {w:3,h:1}, {w:4,h:1},
     {w:1,h:2}, {w:2,h:2}, {w:3,h:2}, {w:4,h:2}
   ];
 
+  // ============================================================================
+  // SCENE SETUP
+  // ============================================================================
+  
+  // Renderer with shadows and tone mapping
   const renderer = new THREE.WebGLRenderer({antialias:true,alpha:false});
   renderer.setSize(innerWidth, innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -106,12 +130,12 @@
   scene.background = new THREE.Color(0xE8F4FF);
   scene.fog = new THREE.Fog(0xE8F4FF, 800, 2000);
   
-  // Use perspective camera for 2.5D effect
+  // Perspective camera for 2.5D effect
   const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 10000);
-  camera.position.set(0, 0, 800);
-  camera.lookAt(0, 0, 0);
+  camera.position.set(0, 200, 800);
+  camera.lookAt(0, 200, 0);
   
-  // Enhanced lighting setup
+  // Three-point lighting setup
   const ambientLight = new THREE.AmbientLight(0xFFFFFF, 0.5);
   scene.add(ambientLight);
   
@@ -143,34 +167,62 @@
   const groundGroup = new THREE.Group();
   scene.add(groundGroup);
 
-  // Camera pan state
-  const cameraTarget = new THREE.Vector3(0, 0, 0);
+  // ============================================================================
+  // STATE
+  // ============================================================================
+  
+  // Camera panning
+  const cameraTarget = new THREE.Vector3(0, 200, 0);
   let isPanning = false;
   let panStart = new THREE.Vector2();
   let panDelta = new THREE.Vector2();
 
+  // Brick management
+  const worldBricks = [];
+  
+  // Particle system
+  const particles = [];
+  
+  // Dragging state
+  let dragging = null;
+  let draggedBrickGroup = null;
+  const pointer = {x: 0, y: 0};
+  
+  // UI preview animations
+  const previewAnimations = [];
+
+  // ============================================================================
+  // GROUND RENDERING
+  // ============================================================================
+
+  // Draw ground studs visible in the camera's view
   function drawGround() {
     groundGroup.clear();
+    
     const studMat = new THREE.MeshStandardMaterial({ 
       color: 0xD0D8E0,
       roughness: 0.7,
       metalness: 0.05
     });
-    const studGeom = new THREE.BoxGeometry(STUD*0.7, STUD_H, DEPTH);
+    const studGeom = new THREE.BoxGeometry(STUD * 0.7, STUD_H, 2);
+    
     // Calculate visible range based on camera position and FOV
     const vFOV = camera.fov * Math.PI / 180;
     const height = 2 * Math.tan(vFOV / 2) * camera.position.z;
     const width = height * camera.aspect;
-    const left = Math.floor((cameraTarget.x - width/2)/STUD)-4;
-    const right = Math.ceil((cameraTarget.x + width/2)/STUD)+4;
+    const left = Math.floor((cameraTarget.x - width/2) / STUD) - 4;
+    const right = Math.ceil((cameraTarget.x + width/2) / STUD) + 4;
+    
+    // Create ground studs within visible range
     for (let x = left; x <= right; x++) {
       const s = new THREE.Mesh(studGeom, studMat);
-      s.position.set(x*STUD + STUD/2, -STUD_H/2, 0);
+      s.position.set(x * STUD + STUD/2, -STUD_H/2, 0);
       s.receiveShadow = true;
       groundGroup.add(s);
     }
   }
 
+  // Handle window resize
   function fit() {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
@@ -180,15 +232,16 @@
   window.addEventListener('resize', fit);
   fit();
 
-  const worldBricks = [];
+  // ============================================================================
+  // BRICK CREATION
+  // ============================================================================
 
-  function makeBrickMesh(w,h,color){
+  // Create a 3D mesh for a brick with given width, height, and color
+  function makeBrickMesh(w, h, color){
     const group = new THREE.Group();
-    // Give bricks actual 3D depth
-    const brickDepth = STUD * 0.8;
     
-    // Main brick body with enhanced material
-    const bodyGeom = new THREE.BoxGeometry(w*STUD, h*STUD, brickDepth);
+    // Main brick body with PBR material
+    const bodyGeom = new THREE.BoxGeometry(w * STUD, h * STUD, BRICK_DEPTH);
     const bodyMat = new THREE.MeshStandardMaterial({
       color: color,
       roughness: 0.3,
@@ -197,12 +250,12 @@
       flatShading: false
     });
     const body = new THREE.Mesh(bodyGeom, bodyMat);
-    body.position.y = h*STUD/2 - STUD_H/2;
+    body.position.y = h * STUD/2 - STUD_H/2;
     body.castShadow = true;
     body.receiveShadow = true;
     group.add(body);
     
-    // Add edge highlighting using LineSegments
+    // Add edge highlighting for better visual definition
     const edges = new THREE.EdgesGeometry(bodyGeom, 15);
     const lineMat = new THREE.LineBasicMaterial({ 
       color: new THREE.Color(color).multiplyScalar(0.35),
@@ -214,9 +267,9 @@
     edgeLines.position.copy(body.position);
     group.add(edgeLines);
 
-    // Studs with better material
+    // Create top studs (one per width unit)
     const studHeight = STUD_H;
-    const studGeom = new THREE.CylinderGeometry(STUD*0.35, STUD*0.35, studHeight, 16);
+    const studGeom = new THREE.CylinderGeometry(STUD * 0.35, STUD * 0.35, studHeight, 16);
     const studMat = new THREE.MeshStandardMaterial({
       color: color,
       roughness: 0.25,
@@ -224,27 +277,35 @@
       flatShading: false
     });
     
-    for(let i=0;i<w;i++){
+    for(let i = 0; i < w; i++){
       const stud = new THREE.Mesh(studGeom, studMat);
-      stud.position.set((i-(w/2-0.5))*STUD, h*STUD-STUD_H/2, 0);
+      stud.position.set((i - (w/2 - 0.5)) * STUD, h * STUD - STUD_H/2, 0);
       stud.castShadow = true;
       stud.receiveShadow = true;
       group.add(stud);
     }
+    
     return group;
   }
 
+  // ============================================================================
+  // SNAPPING LOGIC
+  // ============================================================================
+
+  // Get all top stud positions from placed bricks
   function topStuds(){
-    const studs=[];
+    const studs = [];
     for(const b of worldBricks){
-      for(let i=0;i<b.w;i++) studs.push({x:b.gx+i,y:b.gy+b.h});
+      for(let i = 0; i < b.w; i++) {
+        studs.push({x: b.gx + i, y: b.gy + b.h});
+      }
     }
     return studs;
   }
 
-function nearestAttach(gx,gy,w){
+  // Find nearest attachment point by checking all bottom studs against all attach points
+  function nearestAttach(gx, gy, w){
     const studs = topStuds();
-    // Generate all attachment points: existing top studs + ground studs for each X position
     const attachPoints = [];
     
     // Add all existing top studs as attachment points
@@ -255,24 +316,25 @@ function nearestAttach(gx,gy,w){
       attachPoints.push({x: x, y: 0});
     }
     
-    if(attachPoints.length === 0) return { x: gx, y: 0 }; // fallback
+    if(attachPoints.length === 0) return {x: gx, y: 0}; // Fallback
     
     // Generate all bottom studs of the dragging brick (relative to gx)
     const bottomStuds = [];
     for(let i = 0; i < w; i++) {
-      bottomStuds.push({x: gx + i, y: gy, offset: i}); // offset tracks which stud this is (0 = leftmost)
+      bottomStuds.push({
+        x: gx + i, 
+        y: gy, 
+        offset: i  // Tracks which stud this is (0 = leftmost)
+      });
     }
     
-    console.log("Bottom studs:", bottomStuds, "Attach points:", attachPoints);
-    
-    // Find the closest attachment point to any bottom stud
+    // Find the closest attachment point to any bottom stud using Euclidean distance
     let minDist = Infinity;
     let bestAttach = null;
     let bestBottomStud = null;
     
     for(const bottomStud of bottomStuds) {
       for(const attach of attachPoints) {
-        // Calculate true Euclidean distance
         const dx = bottomStud.x - attach.x;
         const dy = bottomStud.y - attach.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
@@ -285,32 +347,38 @@ function nearestAttach(gx,gy,w){
       }
     }
     
-    // Calculate the brick's gx position based on which bottom stud is attaching
+    // Calculate the brick's final grid position based on which bottom stud is attaching
     const finalGx = bestAttach.x - bestBottomStud.offset;
     
-    console.log("Best attachment:", bestAttach, "Bottom stud offset:", bestBottomStud.offset, "Final gx:", finalGx);
-    return { x: finalGx, y: bestAttach.y };
-}
+    return {x: finalGx, y: bestAttach.y};
+  }
 
-  function highestAttachY(gx,w){
-    let best=0;
-    const studs=topStuds();
-    for(let x=gx;x<gx+w;x++){
-      const hits=studs.filter(s=>s.x===x);
-      if(hits.length) best=Math.max(best,Math.max(...hits.map(h=>h.y)));
+  // Find highest Y position for a brick at given grid X position and width
+  function highestAttachY(gx, w){
+    let best = 0;
+    const studs = topStuds();
+    for(let x = gx; x < gx + w; x++){
+      const hits = studs.filter(s => s.x === x);
+      if(hits.length) {
+        best = Math.max(best, Math.max(...hits.map(h => h.y)));
+      }
     }
     return best;
   }
 
-  function overlaps(gx,gy,w,h){
+  // Check if a brick would overlap with any existing bricks
+  function overlaps(gx, gy, w, h){
     for(const b of worldBricks){
-      if(gx < b.gx + b.w && gx + w > b.gx && gy < b.gy + b.h && gy + h > b.gy) return true;
+      if(gx < b.gx + b.w && gx + w > b.gx && gy < b.gy + b.h && gy + h > b.gy) {
+        return true;
+      }
     }
     return false;
   }
 
-  // Particle system
-  const particles = [];
+  // ============================================================================
+  // PARTICLE SYSTEM
+  // ============================================================================
   
   class Particle {
     constructor(x, y, z, color) {
@@ -367,17 +435,25 @@ function nearestAttach(gx,gy,w){
     }
   }
 
-  function place(gx,gy,w,h,color){
-    const mesh=makeBrickMesh(w,h,color);
-    mesh.position.set((gx+w/2)*STUD, (gy)*STUD, STUD);
+  // ============================================================================
+  // BRICK MANAGEMENT
+  // ============================================================================
+
+  // Place a brick in the world and add it to worldBricks array
+  function place(gx, gy, w, h, color){
+    const mesh = makeBrickMesh(w, h, color);
+    mesh.position.set((gx + w/2) * STUD, gy * STUD, STUD);
     scene.add(mesh);
-    worldBricks.push({gx,gy,w,h,mesh,color});
+    worldBricks.push({gx, gy, w, h, mesh, color});
     
-    // Spawn particles at brick position
-    spawnParticles((gx+w/2)*STUD, gy*STUD + h*STUD/2, STUD, color);
+    // Spawn particles at brick position for visual feedback
+    const particleX = (gx + w/2) * STUD;
+    const particleY = gy * STUD + (h * STUD / 2);
+    const particleZ = STUD;
+    spawnParticles(particleX, particleY, particleZ, color, PARTICLE_COUNT);
   }
 
-  // Find all bricks that depend on a given brick (stacked on top)
+  // Find all bricks that depend on a given brick (recursively find stacked bricks)
   function getDependentBricks(brick, visited = new Set()) {
     if(visited.has(brick)) return [];
     visited.add(brick);
@@ -392,7 +468,8 @@ function nearestAttach(gx,gy,w){
       // Check if other brick is sitting on top of this brick
       if(other.gy === brickTopY) {
         // Check if there's horizontal overlap
-        if(other.gx < brick.gx + brick.w && other.gx + other.w > brick.gx) {
+        const hasOverlap = other.gx < brick.gx + brick.w && other.gx + other.w > brick.gx;
+        if(hasOverlap) {
           dependent.push(other);
           // Recursively find bricks on top of this one
           dependent.push(...getDependentBricks(other, visited));
@@ -403,23 +480,28 @@ function nearestAttach(gx,gy,w){
     return dependent;
   }
 
-  // Remove a brick and its dependents from the world
+  // Remove bricks and their meshes from the world
   function removeBricks(bricks) {
     for(const brick of bricks) {
       scene.remove(brick.mesh);
       const idx = worldBricks.indexOf(brick);
-      if(idx !== -1) worldBricks.splice(idx, 1);
+      if(idx !== -1) {
+        worldBricks.splice(idx, 1);
+      }
     }
   }
 
-  let dragging=null; const pointer={x:0,y:0};
-  let draggedBrickGroup = null; // For dragging existing bricks
+  // ============================================================================
+  // INTERACTION HANDLERS
+  // ============================================================================
 
+  // Convert pointer event to world coordinates (on z=0 plane)
   function toWorld(e){
-    const r=renderer.domElement.getBoundingClientRect();
-    const cx=(e.clientX??e.touches[0].clientX)-r.left;
-    const cy=(e.clientY??e.touches[0].clientY)-r.top;
-    const x=(cx/r.width)*2-1; const y=-(cy/r.height)*2+1;
+    const r = renderer.domElement.getBoundingClientRect();
+    const cx = (e.clientX ?? e.touches[0].clientX) - r.left;
+    const cy = (e.clientY ?? e.touches[0].clientY) - r.top;
+    const x = (cx / r.width) * 2 - 1;
+    const y = -(cy / r.height) * 2 + 1;
     
     // Create a raycaster to find the intersection with z=0 plane
     const raycaster = new THREE.Raycaster();
@@ -433,19 +515,21 @@ function nearestAttach(gx,gy,w){
     return {x: intersect.x, y: intersect.y};
   }
 
+  // Get pointer position in screen coordinates
   function getPointerPos(e) {
-    const r=renderer.domElement.getBoundingClientRect();
-    const cx=(e.clientX??e.touches[0].clientX)-r.left;
-    const cy=(e.clientY??e.touches[0].clientY)-r.top;
+    const r = renderer.domElement.getBoundingClientRect();
+    const cx = (e.clientX ?? e.touches[0].clientX) - r.left;
+    const cy = (e.clientY ?? e.touches[0].clientY) - r.top;
     return new THREE.Vector2(cx, cy);
   }
 
-  // Pick a brick using raycasting
+  // Pick a brick using raycasting (returns the brick object or null)
   function pickBrick(e) {
-    const r=renderer.domElement.getBoundingClientRect();
-    const cx=(e.clientX??e.touches[0].clientX)-r.left;
-    const cy=(e.clientY??e.touches[0].clientY)-r.top;
-    const x=(cx/r.width)*2-1; const y=-(cy/r.height)*2+1;
+    const r = renderer.domElement.getBoundingClientRect();
+    const cx = (e.clientX ?? e.touches[0].clientX) - r.left;
+    const cy = (e.clientY ?? e.touches[0].clientY) - r.top;
+    const x = (cx / r.width) * 2 - 1;
+    const y = -(cy / r.height) * 2 + 1;
     
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
@@ -472,7 +556,8 @@ function nearestAttach(gx,gy,w){
     return null;
   }
 
-  function spawn(w,h){
+  // Create a new brick for dragging
+  function spawn(w, h){
     // Clean up any previous dragging mesh
     if(dragging && dragging.mesh) {
       scene.remove(dragging.mesh);
@@ -484,23 +569,27 @@ function nearestAttach(gx,gy,w){
       }
     }
     
-    const color=randColor();
-    const mesh=makeBrickMesh(w,h,color);
-    mesh.position.set(pointer.x,pointer.y,0);
+    const color = randColor();
+    const mesh = makeBrickMesh(w, h, color);
+    mesh.position.set(pointer.x, pointer.y, 0);
     scene.add(mesh);
-    dragging={w,h,color,mesh};
-    draggedBrickGroup=null;
+    dragging = {w, h, color, mesh};
+    draggedBrickGroup = null;
   }
 
+  // Drop the currently dragging brick into the world
   function drop(){
     if(!dragging) return;
     
-    const {w,h,color,mesh}=dragging;
-    const attach=nearestAttach(Math.round(pointer.x/STUD - w/2),Math.round(pointer.y/STUD),w);
-    const gy=attach.y;
-    const gx = attach.x;
+    const {w, h, color, mesh} = dragging;
+    const gx = Math.round(pointer.x / STUD - w/2);
+    const gy = Math.round(pointer.y / STUD);
+    const attach = nearestAttach(gx, gy, w);
+    const finalGy = attach.y;
+    const finalGx = attach.x;
     
-    if(overlaps(gx,gy,w,h)){
+    // Don't place if it would overlap with existing bricks
+    if(overlaps(finalGx, finalGy, w, h)){
       scene.remove(mesh);
       // Clean up dependent meshes
       if(draggedBrickGroup && draggedBrickGroup.dependentMeshes) {
@@ -508,19 +597,19 @@ function nearestAttach(gx,gy,w){
           scene.remove(depMesh.mesh);
         }
       }
-      dragging=null;
-      draggedBrickGroup=null;
+      dragging = null;
+      draggedBrickGroup = null;
       return;
     }
     
     // Place the main brick
-    place(gx,gy,w,h,color);
+    place(finalGx, finalGy, w, h, color);
     scene.remove(mesh);
     
     // If we were dragging existing bricks, place all the dependent ones too
     if(draggedBrickGroup && draggedBrickGroup.dependents) {
-      const deltaGx = gx - draggedBrickGroup.originalGx;
-      const deltaGy = gy - draggedBrickGroup.originalGy;
+      const deltaGx = finalGx - draggedBrickGroup.originalGx;
+      const deltaGy = finalGy - draggedBrickGroup.originalGy;
       
       for(const dep of draggedBrickGroup.dependents) {
         const newGx = dep.gx + deltaGx;
@@ -536,13 +625,17 @@ function nearestAttach(gx,gy,w){
       }
     }
     
-    dragging=null;
-    draggedBrickGroup=null;
+    dragging = null;
+    draggedBrickGroup = null;
   }
 
-  // Event handlers for dragging bricks and panning
+  // ============================================================================
+  // EVENT LISTENERS
+  // ============================================================================
+
+  // Handle pointer down: pick existing brick or start panning
   renderer.domElement.addEventListener('pointerdown', e => {
-    // Don't pick bricks if we're already dragging any brick
+    // Don't pick bricks if we're already dragging a new brick
     if(dragging) return;
     
     // Try to pick an existing brick
@@ -555,12 +648,12 @@ function nearestAttach(gx,gy,w){
       // Remove them from the world temporarily
       removeBricks(allBricks);
       
-      // Create dragging meshes for the main brick AND all dependents
+      // Create dragging mesh for the main brick
       const mesh = makeBrickMesh(pickedBrick.w, pickedBrick.h, pickedBrick.color);
       mesh.position.copy(pickedBrick.mesh.position);
       scene.add(mesh);
       
-      // Create meshes for dependent bricks
+      // Create meshes for dependent bricks to move along with main brick
       const dependentMeshes = [];
       for(const dep of dependents) {
         const depMesh = makeBrickMesh(dep.w, dep.h, dep.color);
@@ -590,15 +683,15 @@ function nearestAttach(gx,gy,w){
     panStart = getPointerPos(e);
   });
 
+  // Handle pointer move: update dragging brick or pan camera
   renderer.domElement.addEventListener('pointermove', e => {
     const p = toWorld(e);
     pointer.x = p.x;
     pointer.y = p.y;
     
     if(dragging) {
-      // Calculate expected layer and Z position while dragging
-      const gy = Math.round(pointer.y/STUD);
-      const zDepth = STUD * 2.3;
+      // Move the dragging brick and all dependent bricks
+      const zDepth = STUD * 2.3;  // Lift above the scene
       dragging.mesh.position.set(p.x, p.y, zDepth);
       
       // Move all dependent meshes along with the main brick
@@ -612,6 +705,7 @@ function nearestAttach(gx,gy,w){
         }
       }
     } else if(isPanning) {
+      // Pan the camera
       const current = getPointerPos(e);
       panDelta.subVectors(current, panStart);
       
@@ -634,6 +728,7 @@ function nearestAttach(gx,gy,w){
     }
   });
 
+  // Handle pointer up: drop brick or stop panning
   renderer.domElement.addEventListener('pointerup', e => {
     if(isPanning) {
       isPanning = false;
@@ -642,10 +737,11 @@ function nearestAttach(gx,gy,w){
     }
   });
 
-  const ui=document.getElementById('ui');
+  // ============================================================================
+  // UI SETUP
+  // ============================================================================
   
-  // Track all preview animations
-  const previewAnimations = [];
+  const ui=document.getElementById('ui');
   
   // Create 3D preview for each brick type
   function createBrickPreview(w, h) {
@@ -701,9 +797,14 @@ function nearestAttach(gx,gy,w){
     return container;
   }
   
+  // Create UI buttons for all brick types
   CATALOG.forEach(({w,h})=>{
     ui.appendChild(createBrickPreview(w, h));
   });
+
+  // ============================================================================
+  // ANIMATION LOOP
+  // ============================================================================
 
   function loop(){
     // Update particles

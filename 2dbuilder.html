@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>2D Lego Builder — Fixed Alignment and Snap</title>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter+Tight:ital,wght@0,100..900;1,100..900&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap');
     html, body { 
       margin: 0; 
       height: 100%; 
@@ -61,9 +62,56 @@
       font-weight: 600;
       text-shadow: 0 1px 2px rgba(255,255,255,0.8);
     }
+    #welcome-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background: linear-gradient(135deg, #d5ebff44 0%, #fce9d044 100%);
+      cursor: pointer;
+      transition: opacity 0.8s ease-out;
+    }
+    #welcome-overlay.fade-out {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #welcome-overlay h1 {
+      font-family: 'Inter', sans-serif;
+      font-size: 48px;
+      font-weight: 700;
+      color: #2c3e50;
+      margin: 0 0 20px 0;
+      text-align: center;
+      letter-spacing: -0.02em;
+    }
+    #welcome-overlay p {
+      font-family: 'Inter', sans-serif;
+      font-size: 24px;
+      font-weight: 400;
+      color: #5a6c7d;
+      margin: 0 0 10px 0;
+      text-align: center;
+      line-height: 1.6;
+    }
+    #welcome-overlay p:last-child {
+      font-size: 20px;
+      color: #7a8c9d;
+      font-style: italic;
+    }
   </style>
 </head>
 <body>
+  <div id="welcome-overlay">
+    <h1>Reshef's personal site</h1>
+    <p>... is still under construction</p>
+    <p>but you can help build it!</p>
+  </div>
   <div id="ui"></div>
   <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
   <script>
@@ -881,6 +929,20 @@
   
   // Create the starter structure on load
   createStarterStructure();
+
+  // ============================================================================
+  // WELCOME OVERLAY
+  // ============================================================================
+
+  // Handle click on welcome overlay to fade it out
+  const welcomeOverlay = document.getElementById('welcome-overlay');
+  welcomeOverlay.addEventListener('click', () => {
+    welcomeOverlay.classList.add('fade-out');
+    // Remove from DOM after animation completes
+    setTimeout(() => {
+      welcomeOverlay.remove();
+    }, 800);
+  });
 
   // ============================================================================
   // ANIMATION LOOP

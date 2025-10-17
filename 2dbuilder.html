@@ -18,7 +18,21 @@
   const STUD_H = STUD * 0.3;
   const DEPTH = 2;
 
-  const COLORS = [0x264653, 0x2a9d8f, 0xe9c46a, 0xf4a261, 0xe76f51, 0x8ecae6, 0x219ebc, 0xffb703, 0xfb8500, 0x8338ec];
+  // Vibrant, fun LEGO-style colors
+  const COLORS = [
+    0xFF0000, // Bright Red
+    0x0055BF, // LEGO Blue
+    0xFFD700, // Gold/Yellow
+    0x00A650, // Bright Green
+    0xFF6700, // Orange
+    0xA83D9B, // Purple/Magenta
+    0x00BFFF, // Sky Blue
+    0xFF1493, // Hot Pink
+    0x32CD32, // Lime Green
+    0xFFFF00, // Yellow
+    0xFF4500, // Red-Orange
+    0x9400D3, // Dark Violet
+  ];
   const randColor = () => COLORS[Math.floor(Math.random()*COLORS.length)];
 
   const CATALOG = [
@@ -35,7 +49,14 @@
   const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 10000);
   camera.position.set(0, 0, 800);
   camera.lookAt(0, 0, 0);
-  scene.add(new THREE.AmbientLight(0xffffff, 3)); // overexpose a bit
+  
+  // Lighting setup: ambient + directional for depth
+  scene.add(new THREE.AmbientLight(0xffffff, 0.6)); // Softer ambient light
+  
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+  dirLight.position.set(500, 800, 600); // Top right, slightly forward
+  dirLight.castShadow = true;
+  scene.add(dirLight);
 
   const groundGroup = new THREE.Group();
   scene.add(groundGroup);
@@ -76,20 +97,24 @@
 
   function makeBrickMesh(w,h,color){
     const group = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.BoxGeometry(w*STUD,h*STUD,DEPTH), new THREE.MeshLambertMaterial({color}));
+    // Give bricks actual 3D depth
+    const brickDepth = STUD * 0.8; // Bricks have depth now
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(w*STUD, h*STUD, brickDepth), 
+      new THREE.MeshLambertMaterial({color})
+    );
     body.position.y = h*STUD/2 - STUD_H/2;
     group.add(body);
 
     const studMat = new THREE.MeshLambertMaterial({color:color});
     // Use CylinderGeometry for realistic studs
     // Parameters: radiusTop, radiusBottom, height, radialSegments
-    const studGeom = new THREE.CylinderGeometry(STUD*0.35, STUD*0.35, DEPTH, 16);
-    // Rotate cylinder to lie along the Z axis (depth direction)
-    // studGeom.rotateX(Math.PI / 2);
+    const studHeight = STUD_H;
+    const studGeom = new THREE.CylinderGeometry(STUD*0.35, STUD*0.35, studHeight, 16);
     
     for(let i=0;i<w;i++){
       const stud = new THREE.Mesh(studGeom,studMat);
-      stud.position.set((i-(w/2-0.5))*STUD,h*STUD-STUD_H/2,0);
+      stud.position.set((i-(w/2-0.5))*STUD, h*STUD-STUD_H/2, 0);
       group.add(stud);
     }
     return group;
@@ -172,12 +197,48 @@ function nearestAttach(gx,gy,w){
 
   function place(gx,gy,w,h,color){
     const mesh=makeBrickMesh(w,h,color);
-    mesh.position.set((gx+w/2)*STUD,(gy)*STUD,0);
+    mesh.position.set((gx+w/2)*STUD, (gy)*STUD, STUD);
     scene.add(mesh);
-    worldBricks.push({gx,gy,w,h,mesh});
+    worldBricks.push({gx,gy,w,h,mesh,color});
+  }
+
+  // Find all bricks that depend on a given brick (stacked on top)
+  function getDependentBricks(brick, visited = new Set()) {
+    if(visited.has(brick)) return [];
+    visited.add(brick);
+    
+    const dependent = [];
+    const brickTopY = brick.gy + brick.h;
+    
+    // Find bricks that are directly on top of this brick
+    for(const other of worldBricks) {
+      if(other === brick || visited.has(other)) continue;
+      
+      // Check if other brick is sitting on top of this brick
+      if(other.gy === brickTopY) {
+        // Check if there's horizontal overlap
+        if(other.gx < brick.gx + brick.w && other.gx + other.w > brick.gx) {
+          dependent.push(other);
+          // Recursively find bricks on top of this one
+          dependent.push(...getDependentBricks(other, visited));
+        }
+      }
+    }
+    
+    return dependent;
+  }
+
+  // Remove a brick and its dependents from the world
+  function removeBricks(bricks) {
+    for(const brick of bricks) {
+      scene.remove(brick.mesh);
+      const idx = worldBricks.indexOf(brick);
+      if(idx !== -1) worldBricks.splice(idx, 1);
+    }
   }
 
   let dragging=null; const pointer={x:0,y:0};
+  let draggedBrickGroup = null; // For dragging existing bricks
 
   function toWorld(e){
     const r=renderer.domElement.getBoundingClientRect();
@@ -204,6 +265,38 @@ function nearestAttach(gx,gy,w){
     return new THREE.Vector2(cx, cy);
   }
 
+  // Pick a brick using raycasting
+  function pickBrick(e) {
+    const r=renderer.domElement.getBoundingClientRect();
+    const cx=(e.clientX??e.touches[0].clientX)-r.left;
+    const cy=(e.clientY??e.touches[0].clientY)-r.top;
+    const x=(cx/r.width)*2-1; const y=-(cy/r.height)*2+1;
+    
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
+    
+    // Collect all brick meshes
+    const allMeshes = [];
+    for(const brick of worldBricks) {
+      brick.mesh.traverse(child => {
+        if(child.isMesh) allMeshes.push(child);
+      });
+    }
+    
+    const intersects = raycaster.intersectObjects(allMeshes, false);
+    if(intersects.length > 0) {
+      // Find which brick this mesh belongs to
+      for(const brick of worldBricks) {
+        let found = false;
+        brick.mesh.traverse(child => {
+          if(child === intersects[0].object) found = true;
+        });
+        if(found) return brick;
+      }
+    }
+    return null;
+  }
+
   function spawn(w,h){
     const color=randColor();
     const mesh=makeBrickMesh(w,h,color);
@@ -213,19 +306,99 @@ function nearestAttach(gx,gy,w){
   }
 
   function drop(){
-    if(!dragging)return;
+    if(!dragging) return;
+    
     const {w,h,color,mesh}=dragging;
     const attach=nearestAttach(Math.round(pointer.x/STUD - w/2),Math.round(pointer.y/STUD),w);
     const gy=attach.y;
     const gx = attach.x;
-    if(overlaps(gx,gy,w,h)){scene.remove(mesh);dragging=null;return;}
+    
+    if(overlaps(gx,gy,w,h)){
+      scene.remove(mesh);
+      // Clean up dependent meshes
+      if(draggedBrickGroup && draggedBrickGroup.dependentMeshes) {
+        for(const depMesh of draggedBrickGroup.dependentMeshes) {
+          scene.remove(depMesh.mesh);
+        }
+      }
+      dragging=null;
+      draggedBrickGroup=null;
+      return;
+    }
+    
+    // Place the main brick
     place(gx,gy,w,h,color);
-    scene.remove(mesh);dragging=null;
+    scene.remove(mesh);
+    
+    // If we were dragging existing bricks, place all the dependent ones too
+    if(draggedBrickGroup && draggedBrickGroup.dependents) {
+      const deltaGx = gx - draggedBrickGroup.originalGx;
+      const deltaGy = gy - draggedBrickGroup.originalGy;
+      
+      for(const dep of draggedBrickGroup.dependents) {
+        const newGx = dep.gx + deltaGx;
+        const newGy = dep.gy + deltaGy;
+        place(newGx, newGy, dep.w, dep.h, dep.color);
+      }
+      
+      // Clean up dependent meshes
+      if(draggedBrickGroup.dependentMeshes) {
+        for(const depMesh of draggedBrickGroup.dependentMeshes) {
+          scene.remove(depMesh.mesh);
+        }
+      }
+    }
+    
+    dragging=null;
+    draggedBrickGroup=null;
   }
 
   // Event handlers for dragging bricks and panning
   renderer.domElement.addEventListener('pointerdown', e => {
-    if(dragging) return; // Don't pan while dragging a brick
+    // Don't pick bricks if we're already dragging any brick
+    if(dragging) return;
+    
+    // Try to pick an existing brick
+    const pickedBrick = pickBrick(e);
+    if(pickedBrick) {
+      // Start dragging this brick and all dependents
+      const dependents = getDependentBricks(pickedBrick);
+      const allBricks = [pickedBrick, ...dependents];
+      
+      // Remove them from the world temporarily
+      removeBricks(allBricks);
+      
+      // Create dragging meshes for the main brick AND all dependents
+      const mesh = makeBrickMesh(pickedBrick.w, pickedBrick.h, pickedBrick.color);
+      mesh.position.copy(pickedBrick.mesh.position);
+      scene.add(mesh);
+      
+      // Create meshes for dependent bricks
+      const dependentMeshes = [];
+      for(const dep of dependents) {
+        const depMesh = makeBrickMesh(dep.w, dep.h, dep.color);
+        depMesh.position.copy(dep.mesh.position);
+        scene.add(depMesh);
+        dependentMeshes.push({
+          mesh: depMesh,
+          offsetX: dep.mesh.position.x - pickedBrick.mesh.position.x,
+          offsetY: dep.mesh.position.y - pickedBrick.mesh.position.y,
+          offsetZ: dep.mesh.position.z - pickedBrick.mesh.position.z
+        });
+      }
+      
+      dragging = {w: pickedBrick.w, h: pickedBrick.h, color: pickedBrick.color, mesh};
+      draggedBrickGroup = {
+        originalGx: pickedBrick.gx,
+        originalGy: pickedBrick.gy,
+        dependents: dependents,
+        dependentMeshes: dependentMeshes
+      };
+      
+      return;
+    }
+    
+    // Start panning if no brick was picked
     isPanning = true;
     panStart = getPointerPos(e);
   });
@@ -236,7 +409,21 @@ function nearestAttach(gx,gy,w){
     pointer.y = p.y;
     
     if(dragging) {
-      dragging.mesh.position.set(p.x, p.y, 0);
+      // Calculate expected layer and Z position while dragging
+      const gy = Math.round(pointer.y/STUD);
+      const zDepth = gy * STUD * 0.3;
+      dragging.mesh.position.set(p.x, p.y, zDepth);
+      
+      // Move all dependent meshes along with the main brick
+      if(draggedBrickGroup && draggedBrickGroup.dependentMeshes) {
+        for(const depMesh of draggedBrickGroup.dependentMeshes) {
+          depMesh.mesh.position.set(
+            p.x + depMesh.offsetX,
+            p.y + depMesh.offsetY,
+            zDepth + depMesh.offsetZ
+          );
+        }
+      }
     } else if(isPanning) {
       const current = getPointerPos(e);
       panDelta.subVectors(current, panStart);

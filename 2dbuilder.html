@@ -36,10 +36,92 @@
       color: #666;
       font-weight: 500;
     }
+    #crosshair {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 20px;
+      height: 20px;
+      pointer-events: none;
+      display: none;
+      z-index: 100;
+    }
+    #crosshair::before,
+    #crosshair::after {
+      content: '';
+      position: absolute;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+    }
+    #crosshair::before {
+      left: 50%;
+      top: 0;
+      width: 2px;
+      height: 100%;
+      transform: translateX(-50%);
+    }
+    #crosshair::after {
+      top: 50%;
+      left: 0;
+      height: 2px;
+      width: 100%;
+      transform: translateY(-50%);
+    }
+    #score {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      font-size: 32px;
+      font-weight: bold;
+      color: white;
+      text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+      display: none;
+      z-index: 100;
+      font-family: 'Courier New', monospace;
+    }
+    #gameOver {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      display: none;
+      z-index: 200;
+      background: rgba(0, 0, 0, 0.8);
+      padding: 40px 60px;
+      border-radius: 10px;
+      border: 3px solid #FF0000;
+    }
+    #gameOver h1 {
+      font-size: 72px;
+      color: #FF0000;
+      margin: 0 0 20px 0;
+      text-shadow: 3px 3px 6px rgba(0, 0, 0, 1);
+      font-family: 'Courier New', monospace;
+    }
+    #gameOver p {
+      font-size: 24px;
+      color: white;
+      margin: 10px 0;
+      font-family: 'Courier New', monospace;
+    }
+    #gameOver .finalScore {
+      font-size: 36px;
+      color: #FFD700;
+      font-weight: bold;
+    }
   </style>
 </head>
 <body>
   <div id="ui"></div>
+  <div id="crosshair"></div>
+  <div id="score">SCORE: 0</div>
+  <div id="gameOver">
+    <h1>GAME OVER</h1>
+    <p class="finalScore">Final Score: <span id="finalScore">0</span></p>
+    <p>Press SPACE to restart</p>
+  </div>
   <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
   <script>
   const STUD = 16;
@@ -73,10 +155,8 @@
   document.body.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  // Use perspective camera for 2.5D effect
+  // Use perspective camera for full 3D effect
   const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 10000);
-  camera.position.set(0, 0, 800);
-  camera.lookAt(0, 0, 0);
   
   // Lighting setup: ambient + directional for depth
   scene.add(new THREE.AmbientLight(0xffffff, 0.6)); // Softer ambient light
@@ -89,26 +169,241 @@
   const groundGroup = new THREE.Group();
   scene.add(groundGroup);
 
-  // Camera pan state
-  const cameraTarget = new THREE.Vector3(0, 0, 0);
-  let isPanning = false;
-  let panStart = new THREE.Vector2();
-  let panDelta = new THREE.Vector2();
+  // Camera orbit state
+  const cameraTarget = new THREE.Vector3(0, 100, 0); // Center of the build area
+  let cameraDistance = 600;
+  let cameraAngleH = 0; // Horizontal angle (around Y axis)
+  let cameraAngleV = Math.PI / 6; // Vertical angle (up/down), start at 30 degrees
+  let isRotating = false;
+  let rotateStart = new THREE.Vector2();
+  
+  // Update camera position based on orbit angles
+  function updateCameraPosition() {
+    camera.position.x = cameraTarget.x + cameraDistance * Math.sin(cameraAngleH) * Math.cos(cameraAngleV);
+    camera.position.y = cameraTarget.y + cameraDistance * Math.sin(cameraAngleV);
+    camera.position.z = cameraTarget.z + cameraDistance * Math.cos(cameraAngleH) * Math.cos(cameraAngleV);
+    camera.lookAt(cameraTarget);
+  }
+  
+  updateCameraPosition();
 
+  // Game mode state
+  let gameMode = false;
+  let gameOver = false;
+  let player = null;
+  let playerVelocity = {x: 0, y: 0, z: 0};
+  let keys = {};
+  const PLAYER_SPEED = 50; // 10x faster
+  const PLAYER_JUMP = 15;
+  const PLAYER_SIZE = STUD * 0.8;
+  let mouseLocked = false;
+  let playerGun = null;
+  let score = 0;
+  const explosionParticles = [];
+  
+  // Create explosion effect
+  function createExplosion(x, y, z) {
+    const particleCount = 20;
+    for(let i = 0; i < particleCount; i++) {
+      const size = Math.random() * 3 + 1;
+      const particleGeom = new THREE.BoxGeometry(size, size, size);
+      const particleMat = new THREE.MeshLambertMaterial({ 
+        color: Math.random() > 0.5 ? 0xFF6600 : 0xFFFF00,
+        emissive: Math.random() > 0.5 ? 0xFF3300 : 0xFFAA00
+      });
+      const particle = new THREE.Mesh(particleGeom, particleMat);
+      
+      particle.position.set(x, y, z);
+      scene.add(particle);
+      
+      // Random velocity
+      const velocity = {
+        x: (Math.random() - 0.5) * 100,
+        y: Math.random() * 80 + 20,
+        z: (Math.random() - 0.5) * 100
+      };
+      
+      explosionParticles.push({
+        mesh: particle,
+        velocity: velocity,
+        life: 1.0 // seconds
+      });
+    }
+  }
+  
+  // Update explosion particles
+  function updateExplosions(deltaTime) {
+    for(let i = explosionParticles.length - 1; i >= 0; i--) {
+      const particle = explosionParticles[i];
+      
+      // Move particle
+      particle.mesh.position.x += particle.velocity.x * deltaTime;
+      particle.mesh.position.y += particle.velocity.y * deltaTime;
+      particle.mesh.position.z += particle.velocity.z * deltaTime;
+      
+      // Apply gravity
+      particle.velocity.y -= 100 * deltaTime;
+      
+      // Fade out
+      particle.life -= deltaTime;
+      particle.mesh.material.opacity = particle.life;
+      particle.mesh.material.transparent = true;
+      
+      // Remove if dead
+      if(particle.life <= 0) {
+        scene.remove(particle.mesh);
+        explosionParticles.splice(i, 1);
+      }
+    }
+  }
+  
+  // Update score display
+  function updateScore() {
+    document.getElementById('score').textContent = 'SCORE: ' + score;
+  }
+  
+  // Player death
+  function playerDeath() {
+    console.log("GAME OVER!");
+    gameOver = true;
+    
+    // Show game over screen
+    document.getElementById('finalScore').textContent = score;
+    document.getElementById('gameOver').style.display = 'block';
+    document.getElementById('crosshair').style.display = 'none';
+    
+    // Unlock pointer
+    if(document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+  }
+  
+  // Restart game
+  function restartGame() {
+    gameOver = false;
+    score = 0;
+    updateScore();
+    
+    // Hide game over screen
+    document.getElementById('gameOver').style.display = 'none';
+    document.getElementById('crosshair').style.display = 'block';
+    
+    // Respawn player
+    player.x = 0;
+    player.y = 0;
+    player.z = 0;
+    playerVelocity.x = 0;
+    playerVelocity.y = 0;
+    playerVelocity.z = 0;
+    
+    // Remove all aliens
+    for(const alien of aliens) {
+      if(alien.alive) {
+        scene.remove(alien.mesh);
+      }
+    }
+    aliens.length = 0;
+    
+    // Remove all bullets
+    for(const bullet of bullets) {
+      scene.remove(bullet.mesh);
+    }
+    bullets.length = 0;
+    
+    // Spawn new aliens
+    spawnAliens(5);
+    
+    // Re-lock pointer
+    renderer.domElement.requestPointerLock();
+  }
+  
+  // Create alien-style gun
+  function createGun() {
+    const gunGroup = new THREE.Group();
+    
+    // Main body (green alien tech)
+    const bodyGeom = new THREE.BoxGeometry(3, 4, 12);
+    const bodyMat = new THREE.MeshLambertMaterial({ color: 0x00FF00, emissive: 0x004400 });
+    const body = new THREE.Mesh(bodyGeom, bodyMat);
+    body.position.z = -6;
+    gunGroup.add(body);
+    
+    // Barrel (glowing)
+    const barrelGeom = new THREE.CylinderGeometry(1, 1, 8, 8);
+    const barrelMat = new THREE.MeshLambertMaterial({ color: 0x00FFFF, emissive: 0x00AAAA });
+    const barrel = new THREE.Mesh(barrelGeom, barrelMat);
+    barrel.rotation.x = Math.PI / 2;
+    barrel.position.z = -14;
+    gunGroup.add(barrel);
+    
+    // Energy core (red)
+    const coreGeom = new THREE.SphereGeometry(1.5, 8, 8);
+    const coreMat = new THREE.MeshLambertMaterial({ color: 0xFF0000, emissive: 0xAA0000 });
+    const core = new THREE.Mesh(coreGeom, coreMat);
+    core.position.z = -4;
+    gunGroup.add(core);
+    
+    // Handle
+    const handleGeom = new THREE.BoxGeometry(2, 6, 3);
+    const handleMat = new THREE.MeshLambertMaterial({ color: 0x333333 });
+    const handle = new THREE.Mesh(handleGeom, handleMat);
+    handle.position.y = -3;
+    handle.position.z = -2;
+    gunGroup.add(handle);
+    
+    scene.add(gunGroup);
+    return gunGroup;
+  }
+  
+  // Create player character
+  function createPlayer() {
+    const playerGroup = new THREE.Group();
+    
+    // Body
+    const bodyGeom = new THREE.BoxGeometry(PLAYER_SIZE, PLAYER_SIZE * 2, PLAYER_SIZE);
+    const bodyMat = new THREE.MeshLambertMaterial({ color: 0x00AAFF });
+    const body = new THREE.Mesh(bodyGeom, bodyMat);
+    body.position.y = PLAYER_SIZE;
+    playerGroup.add(body);
+    
+    // Head
+    const headGeom = new THREE.BoxGeometry(PLAYER_SIZE * 0.7, PLAYER_SIZE * 0.7, PLAYER_SIZE * 0.7);
+    const headMat = new THREE.MeshLambertMaterial({ color: 0xFFCC99 });
+    const head = new THREE.Mesh(headGeom, headMat);
+    head.position.y = PLAYER_SIZE * 2.35;
+    playerGroup.add(head);
+    
+    playerGroup.position.set(0, 0, 0);
+    scene.add(playerGroup);
+    
+    return {
+      mesh: playerGroup,
+      x: 0,
+      y: 0,
+      z: 0,
+      onGround: false
+    };
+  }
+  
   function drawGround() {
     groundGroup.clear();
     const studMat = new THREE.MeshLambertMaterial({ color: 0x9aa0a6 });
     const studGeom = new THREE.BoxGeometry(STUD*0.7, STUD_H, DEPTH);
-    // Calculate visible range based on camera position and FOV
-    const vFOV = camera.fov * Math.PI / 180;
-    const height = 2 * Math.tan(vFOV / 2) * camera.position.z;
-    const width = height * camera.aspect;
-    const left = Math.floor((cameraTarget.x - width/2)/STUD)-4;
-    const right = Math.ceil((cameraTarget.x + width/2)/STUD)+4;
-    for (let x = left; x <= right; x++) {
+    // Draw a fixed grid around the center
+    const gridSize = 32; // studs in each direction
+    for (let x = -gridSize; x <= gridSize; x++) {
       const s = new THREE.Mesh(studGeom, studMat);
       s.position.set(x*STUD + STUD/2, -STUD_H/2, 0);
       groundGroup.add(s);
+    }
+    
+    // Add solid ground plane for game mode
+    if(gameMode) {
+      const groundPlaneGeom = new THREE.BoxGeometry(gridSize * 2 * STUD, 2, gridSize * 2 * STUD);
+      const groundPlaneMat = new THREE.MeshLambertMaterial({ color: 0x8B7355 });
+      const groundPlane = new THREE.Mesh(groundPlaneGeom, groundPlaneMat);
+      groundPlane.position.set(0, -STUD_H - 1, 0);
+      groundGroup.add(groundPlane);
     }
   }
 
@@ -122,6 +417,234 @@
   fit();
 
   const worldBricks = [];
+  const aliens = [];
+  const bullets = [];
+  
+  // Create an alien
+  function createAlien(x, z) {
+    const alienGroup = new THREE.Group();
+    
+    // Body
+    const bodyGeom = new THREE.CylinderGeometry(PLAYER_SIZE * 0.6, PLAYER_SIZE * 0.6, PLAYER_SIZE * 1.5, 8);
+    const bodyMat = new THREE.MeshLambertMaterial({ color: 0x00FF00 });
+    const body = new THREE.Mesh(bodyGeom, bodyMat);
+    body.position.y = PLAYER_SIZE * 0.75;
+    alienGroup.add(body);
+    
+    // Head
+    const headGeom = new THREE.SphereGeometry(PLAYER_SIZE * 0.5, 8, 8);
+    const headMat = new THREE.MeshLambertMaterial({ color: 0x88FF88 });
+    const head = new THREE.Mesh(headGeom, headMat);
+    head.position.y = PLAYER_SIZE * 1.8;
+    alienGroup.add(head);
+    
+    // Eyes
+    const eyeGeom = new THREE.SphereGeometry(PLAYER_SIZE * 0.15, 6, 6);
+    const eyeMat = new THREE.MeshLambertMaterial({ color: 0xFF0000 });
+    const leftEye = new THREE.Mesh(eyeGeom, eyeMat);
+    leftEye.position.set(-PLAYER_SIZE * 0.2, PLAYER_SIZE * 1.9, PLAYER_SIZE * 0.4);
+    alienGroup.add(leftEye);
+    const rightEye = new THREE.Mesh(eyeGeom, eyeMat);
+    rightEye.position.set(PLAYER_SIZE * 0.2, PLAYER_SIZE * 1.9, PLAYER_SIZE * 0.4);
+    alienGroup.add(rightEye);
+    
+    alienGroup.position.set(x, -STUD_H, z);
+    scene.add(alienGroup);
+    
+    return {
+      mesh: alienGroup,
+      x: x,
+      z: z,
+      health: 3,
+      speed: 10,
+      alive: true
+    };
+  }
+  
+  function spawnAliens(count) {
+    // Clear existing aliens
+    for(const alien of aliens) {
+      scene.remove(alien.mesh);
+    }
+    aliens.length = 0;
+    
+    // Spawn new aliens
+    for(let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2;
+      const distance = 200 + Math.random() * 200;
+      const x = Math.cos(angle) * distance;
+      const z = Math.sin(angle) * distance;
+      aliens.push(createAlien(x, z));
+    }
+  }
+  
+  // Shooting
+  function shoot() {
+    if(!gameMode || !player) return;
+    
+    // Create bullet
+    const bulletGeom = new THREE.SphereGeometry(2, 8, 8);
+    const bulletMat = new THREE.MeshLambertMaterial({ color: 0xFFFF00, emissive: 0xFFAA00 });
+    const bulletMesh = new THREE.Mesh(bulletGeom, bulletMat);
+    
+    // Position at player
+    bulletMesh.position.set(player.x, player.y + PLAYER_SIZE, player.z);
+    scene.add(bulletMesh);
+    
+    // Calculate direction from camera angle
+    const direction = new THREE.Vector3(
+      -Math.sin(cameraAngleH) * Math.cos(cameraAngleV),
+      -Math.sin(cameraAngleV),
+      -Math.cos(cameraAngleH) * Math.cos(cameraAngleV)
+    );
+    
+    bullets.push({
+      mesh: bulletMesh,
+      direction: direction,
+      speed: 200,
+      life: 3 // seconds
+    });
+    
+    console.log("PEW!");
+  }
+  
+  // Update aliens
+  function updateAliens(deltaTime) {
+    if(!gameMode || !player) return;
+    
+    for(const alien of aliens) {
+      if(!alien.alive) continue;
+      
+      // Move towards player
+      const dx = player.x - alien.x;
+      const dz = player.z - alien.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      
+      if(dist > 5) {
+        alien.x += (dx / dist) * alien.speed * deltaTime;
+        alien.z += (dz / dist) * alien.speed * deltaTime;
+        alien.mesh.position.x = alien.x;
+        alien.mesh.position.z = alien.z;
+      }
+      
+      // Check if touching player
+      if(dist < PLAYER_SIZE * 2) {
+        playerDeath();
+        return; // Exit early after death
+      }
+      
+      // Face player
+      alien.mesh.rotation.y = Math.atan2(dx, dz);
+    }
+  }
+  
+  // Update bullets
+  function updateBullets(deltaTime) {
+    for(let i = bullets.length - 1; i >= 0; i--) {
+      const bullet = bullets[i];
+      
+      // Move bullet
+      bullet.mesh.position.x += bullet.direction.x * bullet.speed * deltaTime;
+      bullet.mesh.position.y += bullet.direction.y * bullet.speed * deltaTime;
+      bullet.mesh.position.z += bullet.direction.z * bullet.speed * deltaTime;
+      
+      // Decrease life
+      bullet.life -= deltaTime;
+      
+      // Check collision with aliens
+      let hitSomething = false;
+      for(const alien of aliens) {
+        if(!alien.alive) continue;
+        
+        const dx = bullet.mesh.position.x - alien.x;
+        const dz = bullet.mesh.position.z - alien.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        
+        if(dist < PLAYER_SIZE) {
+          alien.health--;
+          if(alien.health <= 0) {
+            alien.alive = false;
+            scene.remove(alien.mesh);
+            
+            // Create explosion at alien position
+            createExplosion(alien.x, alien.mesh.position.y + PLAYER_SIZE, alien.z);
+            
+            // Add score
+            score += 10;
+            updateScore();
+            
+            // Spawn two new aliens for each one killed
+            const angle1 = Math.random() * Math.PI * 2;
+            const angle2 = Math.random() * Math.PI * 2;
+            const spawnDistance = 300;
+            
+            const newAlien1 = createAlien(
+              player.x + Math.cos(angle1) * spawnDistance,
+              player.z + Math.sin(angle1) * spawnDistance
+            );
+            aliens.push(newAlien1);
+            
+            const newAlien2 = createAlien(
+              player.x + Math.cos(angle2) * spawnDistance,
+              player.z + Math.sin(angle2) * spawnDistance
+            );
+            aliens.push(newAlien2);
+            
+            console.log("Alien destroyed! +10 points. Two more spawned!");
+          }
+          
+          // Remove bullet
+          scene.remove(bullet.mesh);
+          bullets.splice(i, 1);
+          hitSomething = true;
+          break;
+        }
+      }
+      
+      if(hitSomething) continue;
+      
+      // Check collision with bricks
+      for(let j = worldBricks.length - 1; j >= 0; j--) {
+        const brick = worldBricks[j];
+        
+        const brickLeft = brick.gx * STUD;
+        const brickRight = (brick.gx + brick.w) * STUD;
+        const brickFront = -DEPTH/2;
+        const brickBack = DEPTH/2;
+        const brickBottom = brick.gy * STUD;
+        const brickTop = (brick.gy + brick.h) * STUD;
+        
+        // Check if bullet is inside brick
+        if(bullet.mesh.position.x > brickLeft && bullet.mesh.position.x < brickRight &&
+           bullet.mesh.position.z > brickFront && bullet.mesh.position.z < brickBack &&
+           bullet.mesh.position.y > brickBottom && bullet.mesh.position.y < brickTop) {
+          
+          // Remove brick
+          scene.remove(brick.mesh);
+          worldBricks.splice(j, 1);
+          
+          // Create explosion at brick position
+          createExplosion(brick.mesh.position.x, brick.mesh.position.y, brick.mesh.position.z);
+          
+          console.log("Brick destroyed!");
+          
+          // Remove bullet
+          scene.remove(bullet.mesh);
+          bullets.splice(i, 1);
+          hitSomething = true;
+          break;
+        }
+      }
+      
+      if(hitSomething) continue;
+      
+      // Remove if expired
+      if(bullet.life <= 0) {
+        scene.remove(bullet.mesh);
+        bullets.splice(i, 1);
+      }
+    }
+  }
 
   function makeBrickMesh(w,h,color){
     const group = new THREE.Group();
@@ -223,11 +746,76 @@ function nearestAttach(gx,gy,w){
     return false;
   }
 
-  function place(gx,gy,w,h,color){
+  function place(gx,gy,w,h,color,checkPhysics=true){
     const mesh=makeBrickMesh(w,h,color);
-    mesh.position.set((gx+w/2)*STUD, (gy)*STUD, STUD);
+    // Keep all bricks on the flat X-Y plane (Z=0)
+    mesh.position.set((gx+w/2)*STUD, (gy)*STUD, 0);
     scene.add(mesh);
-    worldBricks.push({gx,gy,w,h,mesh,color});
+    const brick = {
+      gx, gy, w, h, mesh, color,
+      // Physics properties
+      velocity: {x: 0, y: 0, rotation: 0},
+      angularVelocity: 0,
+      rotation: 0,
+      falling: false,
+      snapped: false
+    };
+    worldBricks.push(brick);
+    
+    // Check if brick should fall or snap
+    if(checkPhysics) {
+      checkBrickPhysics(brick);
+    }
+    
+    return brick;
+  }
+  
+  // Check if a brick is supported or should fall
+  function checkBrickPhysics(brick) {
+    // Check if brick is on ground
+    if(brick.gy === 0) {
+      brick.snapped = true;
+      brick.falling = false;
+      return;
+    }
+    
+    // Find nearest support brick
+    let minDist = Infinity;
+    let nearestBrick = null;
+    
+    for(const other of worldBricks) {
+      if(other === brick) continue;
+      
+      // Check if other brick is below and nearby
+      if(other.gy + other.h <= brick.gy) {
+        // Check horizontal distance
+        const brickCenterX = brick.gx + brick.w/2;
+        const otherCenterX = other.gx + other.w/2;
+        const dx = Math.abs(brickCenterX - otherCenterX);
+        const dy = Math.abs((other.gy + other.h) - brick.gy);
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        
+        if(dist < minDist) {
+          minDist = dist;
+          nearestBrick = other;
+        }
+      }
+    }
+    
+    // Snap threshold: 1.5 blocks
+    const snapThreshold = 1.5 * STUD;
+    
+    if(nearestBrick && minDist < snapThreshold) {
+      // Snap to nearest brick
+      brick.gy = nearestBrick.gy + nearestBrick.h;
+      brick.mesh.position.y = brick.gy * STUD;
+      brick.snapped = true;
+      brick.falling = false;
+    } else {
+      // Start falling
+      brick.falling = true;
+      brick.snapped = false;
+    }
   }
 
   // Find all bricks that depend on a given brick (stacked on top)
@@ -349,9 +937,9 @@ function nearestAttach(gx,gy,w){
     if(!dragging) return;
     
     const {w,h,color,mesh}=dragging;
-    const attach=nearestAttach(Math.round(pointer.x/STUD - w/2),Math.round(pointer.y/STUD),w);
-    const gy=attach.y;
-    const gx = attach.x;
+    // Use mouse position directly for physics-based placement
+    const gx = Math.round(pointer.x/STUD - w/2);
+    const gy = Math.round(pointer.y/STUD);
     
     if(overlaps(gx,gy,w,h)){
       scene.remove(mesh);
@@ -366,8 +954,8 @@ function nearestAttach(gx,gy,w){
       return;
     }
     
-    // Place the main brick
-    place(gx,gy,w,h,color);
+    // Place the main brick with physics
+    const placedBrick = place(gx,gy,w,h,color,true);
     scene.remove(mesh);
     
     // If we were dragging existing bricks, place all the dependent ones too
@@ -395,6 +983,9 @@ function nearestAttach(gx,gy,w){
 
   // Event handlers for dragging bricks and panning
   renderer.domElement.addEventListener('pointerdown', e => {
+    // In game mode, do nothing on click
+    if(gameMode) return;
+    
     // Don't pick bricks if we're already dragging any brick
     if(dragging) return;
     
@@ -438,21 +1029,34 @@ function nearestAttach(gx,gy,w){
       return;
     }
     
-    // Start panning if no brick was picked
-    isPanning = true;
-    panStart = getPointerPos(e);
+    // Start rotating if no brick was picked
+    isRotating = true;
+    rotateStart = getPointerPos(e);
   });
 
   renderer.domElement.addEventListener('pointermove', e => {
+    // In game mode, use mouse movement for camera rotation
+    if(gameMode && mouseLocked) {
+      const deltaX = e.movementX || 0;
+      const deltaY = e.movementY || 0;
+      
+      // Rotate camera with mouse movement
+      cameraAngleH -= deltaX * 0.003;
+      cameraAngleV += deltaY * 0.003; // Inverted Y-axis
+      
+      // Clamp vertical angle
+      cameraAngleV = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, cameraAngleV));
+      
+      return;
+    }
+    
     const p = toWorld(e);
     pointer.x = p.x;
     pointer.y = p.y;
     
     if(dragging) {
-      // Calculate expected layer and Z position while dragging
-      const gy = Math.round(pointer.y/STUD);
-      const zDepth = gy * STUD * 0.3;
-      dragging.mesh.position.set(p.x, p.y, zDepth);
+      // Keep all bricks on the flat X-Y plane (Z=0)
+      dragging.mesh.position.set(p.x, p.y, 0);
       
       // Move all dependent meshes along with the main brick
       if(draggedBrickGroup && draggedBrickGroup.dependentMeshes) {
@@ -460,39 +1064,135 @@ function nearestAttach(gx,gy,w){
           depMesh.mesh.position.set(
             p.x + depMesh.offsetX,
             p.y + depMesh.offsetY,
-            zDepth + depMesh.offsetZ
+            depMesh.offsetZ // Keep original Z offset
           );
         }
       }
-    } else if(isPanning) {
+    } else if(isRotating) {
       const current = getPointerPos(e);
-      panDelta.subVectors(current, panStart);
+      const deltaX = current.x - rotateStart.x;
+      const deltaY = current.y - rotateStart.y;
       
-      // Convert screen space delta to world space
-      const vFOV = camera.fov * Math.PI / 180;
-      const height = 2 * Math.tan(vFOV / 2) * camera.position.z;
-      const width = height * camera.aspect;
+      // Rotate camera around the target
+      cameraAngleH -= deltaX * 0.005; // Horizontal rotation
+      cameraAngleV += deltaY * 0.005; // Vertical rotation
       
-      const worldDeltaX = -(panDelta.x / renderer.domElement.clientWidth) * width;
-      const worldDeltaY = (panDelta.y / renderer.domElement.clientHeight) * height;
+      // Clamp vertical angle to avoid flipping
+      cameraAngleV = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, cameraAngleV));
       
-      cameraTarget.x += worldDeltaX;
-      cameraTarget.y += worldDeltaY;
-      camera.position.x = cameraTarget.x;
-      camera.position.y = cameraTarget.y;
-      camera.lookAt(cameraTarget);
-      
-      panStart.copy(current);
-      drawGround();
+      updateCameraPosition();
+      rotateStart.copy(current);
     }
   });
 
   renderer.domElement.addEventListener('pointerup', e => {
-    if(isPanning) {
-      isPanning = false;
+    if(gameMode) return; // Don't drop in game mode
+    
+    if(isRotating) {
+      isRotating = false;
     } else {
       drop();
     }
+  });
+  
+  // Pointer lock tracking
+  document.addEventListener('pointerlockchange', () => {
+    mouseLocked = document.pointerLockElement === renderer.domElement;
+  });
+  
+  // Shoot on click in game mode
+  renderer.domElement.addEventListener('click', () => {
+    if(gameMode && !gameOver) {
+      shoot();
+    }
+  });
+  
+  // Keyboard controls
+  window.addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+    
+    // Restart game on space when game over
+    if(e.key === ' ' && gameOver && gameMode) {
+      restartGame();
+      return;
+    }
+    
+    // Shoot with left mouse button or E key
+    if((e.key === 'e' || e.key === 'E') && gameMode && player && !gameOver) {
+      shoot();
+    }
+    
+    // Toggle game mode with Enter
+    if(e.key === 'Enter') {
+      gameMode = !gameMode;
+      
+      if(gameMode) {
+        // Enter game mode
+        if(!player) {
+          player = createPlayer();
+        }
+        player.mesh.visible = false; // Hide player body in first-person
+        
+        // Create gun if not exists
+        if(!playerGun) {
+          playerGun = createGun();
+        }
+        playerGun.visible = true;
+        
+        // Automatically lock pointer
+        renderer.domElement.requestPointerLock();
+        
+        // Position camera behind player
+        cameraDistance = 150;
+        cameraAngleV = Math.PI / 8;
+        updateCameraForPlayer();
+        
+        // Hide UI and show crosshair and score
+        ui.style.display = 'none';
+        document.getElementById('crosshair').style.display = 'block';
+        document.getElementById('score').style.display = 'block';
+        updateScore();
+        
+        // Spawn some aliens
+        spawnAliens(5);
+        
+        console.log("Game Mode: ON - Use WASD to move, Space to jump, E or Click to shoot");
+      } else {
+        // Exit game mode
+        if(player) {
+          player.mesh.visible = false;
+        }
+        
+        // Hide gun
+        if(playerGun) {
+          playerGun.visible = false;
+        }
+        
+        // Automatically unlock pointer
+        if(document.pointerLockElement) {
+          document.exitPointerLock();
+        }
+        
+        // Reset camera
+        cameraDistance = 600;
+        cameraAngleV = Math.PI / 6;
+        cameraTarget.set(0, 100, 0);
+        updateCameraPosition();
+        
+        // Show UI and hide crosshair and score
+        ui.style.display = 'flex';
+        document.getElementById('crosshair').style.display = 'none';
+        document.getElementById('score').style.display = 'none';
+        
+        console.log("Game Mode: OFF - Build mode");
+      }
+      
+      drawGround();
+    }
+  });
+  
+  window.addEventListener('keyup', e => {
+    keys[e.key.toLowerCase()] = false;
   });
 
   const ui=document.getElementById('ui');
@@ -558,12 +1258,291 @@ function nearestAttach(gx,gy,w){
     ui.appendChild(createBrickPreview(w, h));
   });
 
+  // Player physics update
+  function updatePlayer(deltaTime = 0.016) {
+    if(!gameMode || !player) return;
+    
+    // Movement input relative to camera direction
+    let moveForward = 0;
+    let moveRight = 0;
+    
+    if(keys['w'] || keys['arrowup']) moveForward += 1;
+    if(keys['s'] || keys['arrowdown']) moveForward -= 1;
+    if(keys['a'] || keys['arrowleft']) moveRight -= 1;
+    if(keys['d'] || keys['arrowright']) moveRight += 1;
+    
+    // Calculate movement direction based on camera angle
+    const forward = new THREE.Vector3(
+      -Math.sin(cameraAngleH),
+      0,
+      -Math.cos(cameraAngleH)
+    );
+    const right = new THREE.Vector3(
+      Math.cos(cameraAngleH),
+      0,
+      -Math.sin(cameraAngleH)
+    );
+    
+    // Apply movement
+    playerVelocity.x = (forward.x * moveForward + right.x * moveRight) * PLAYER_SPEED;
+    playerVelocity.z = (forward.z * moveForward + right.z * moveRight) * PLAYER_SPEED;
+    
+    // Jump
+    if(keys[' '] && player.onGround) {
+      playerVelocity.y = PLAYER_JUMP;
+      player.onGround = false;
+    }
+    
+    // Apply gravity
+    if(!player.onGround) {
+      playerVelocity.y -= GRAVITY;
+    }
+    
+    // Update position
+    player.x += playerVelocity.x * deltaTime;
+    player.y += playerVelocity.y * deltaTime;
+    player.z += playerVelocity.z * deltaTime;
+    
+    // Ground collision
+    const groundLevel = -STUD_H;
+    if(player.y <= groundLevel) {
+      player.y = groundLevel;
+      playerVelocity.y = 0;
+      player.onGround = true;
+    }
+    
+    // Collision with bricks
+    const playerLeft = player.x - PLAYER_SIZE/2;
+    const playerRight = player.x + PLAYER_SIZE/2;
+    const playerFront = player.z - PLAYER_SIZE/2;
+    const playerBack = player.z + PLAYER_SIZE/2;
+    const playerBottom = player.y;
+    const playerTop = player.y + PLAYER_SIZE * 2.5;
+    
+    for(const brick of worldBricks) {
+      if(brick.falling) continue;
+      
+      const brickLeft = brick.gx * STUD;
+      const brickRight = (brick.gx + brick.w) * STUD;
+      const brickFront = -DEPTH/2; // Bricks are at Z=0, centered
+      const brickBack = DEPTH/2;
+      const brickBottom = brick.gy * STUD;
+      const brickTop = (brick.gy + brick.h) * STUD;
+      
+      // Check 3D collision (X, Y, and Z axes)
+      if(playerRight > brickLeft && playerLeft < brickRight &&
+         playerBack > brickFront && playerFront < brickBack &&
+         playerTop > brickBottom && playerBottom < brickTop) {
+        
+        // Landing on top of brick
+        if(playerVelocity.y < 0 && playerBottom < brickTop && playerBottom > brickTop - 10) {
+          player.y = brickTop;
+          playerVelocity.y = 0;
+          player.onGround = true;
+        }
+        // Side collisions (X and Z)
+        else if(playerBottom < brickTop - 5) {
+          // Calculate overlap on each axis
+          const overlapLeft = playerRight - brickLeft;
+          const overlapRight = brickRight - playerLeft;
+          const overlapFront = playerBack - brickFront;
+          const overlapBack = brickBack - playerFront;
+          
+          // Find minimum overlap
+          const minXOverlap = Math.min(overlapLeft, overlapRight);
+          const minZOverlap = Math.min(overlapFront, overlapBack);
+          
+          // Push player out on axis with smallest overlap
+          if(minXOverlap < minZOverlap) {
+            // Push on X axis
+            if(overlapLeft < overlapRight) {
+              player.x = brickLeft - PLAYER_SIZE/2;
+            } else {
+              player.x = brickRight + PLAYER_SIZE/2;
+            }
+            playerVelocity.x = 0;
+          } else {
+            // Push on Z axis
+            if(overlapFront < overlapBack) {
+              player.z = brickFront - PLAYER_SIZE/2;
+            } else {
+              player.z = brickBack + PLAYER_SIZE/2;
+            }
+            playerVelocity.z = 0;
+          }
+        }
+      }
+    }
+    
+    // Update mesh position
+    player.mesh.position.x = player.x;
+    player.mesh.position.y = player.y;
+    player.mesh.position.z = player.z;
+    
+    // Update camera to follow player
+    updateCameraForPlayer();
+  }
+  
+  function updateCameraForPlayer() {
+    if(!gameMode || !player) return;
+    
+    // First-person camera at player head height
+    camera.position.x = player.x;
+    camera.position.y = player.y + PLAYER_SIZE * 2; // At head height
+    camera.position.z = player.z;
+    
+    // Look direction based on mouse
+    const lookTarget = new THREE.Vector3(
+      player.x - Math.sin(cameraAngleH) * 100,
+      player.y + PLAYER_SIZE * 2 - Math.sin(cameraAngleV) * 100,
+      player.z - Math.cos(cameraAngleH) * 100
+    );
+    camera.lookAt(lookTarget);
+    
+    // Update gun position and rotation
+    if(playerGun) {
+      // Position gun in front of camera, to the right and down
+      const gunOffset = new THREE.Vector3(8, -6, -15);
+      gunOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraAngleH);
+      
+      playerGun.position.set(
+        camera.position.x + gunOffset.x,
+        camera.position.y + gunOffset.y,
+        camera.position.z + gunOffset.z
+      );
+      
+      playerGun.rotation.y = cameraAngleH;
+      playerGun.rotation.x = -cameraAngleV;
+    }
+  }
+
+  // Physics simulation
+  const GRAVITY = 0.5;
+  const FRICTION = 0.98;
+  const GROUND_Y = 0;
+  
+  function updatePhysics(deltaTime = 0.016) {
+    for(const brick of worldBricks) {
+      if(brick.falling) {
+        // Apply gravity
+        brick.velocity.y -= GRAVITY;
+        
+        // Update position
+        brick.gy += brick.velocity.y * deltaTime / STUD;
+        brick.gx += brick.velocity.x * deltaTime / STUD;
+        brick.rotation += brick.angularVelocity * deltaTime;
+        
+        // Check ground collision
+        if(brick.gy <= GROUND_Y) {
+          brick.gy = GROUND_Y;
+          brick.velocity.y = 0;
+          brick.velocity.x *= FRICTION;
+          brick.angularVelocity *= FRICTION;
+          brick.falling = false;
+          brick.snapped = true;
+        }
+        
+        // Check collision with other bricks
+        for(const other of worldBricks) {
+          if(other === brick || other.falling) continue;
+          
+          // Simple collision: if brick lands on another
+          if(brick.gy <= other.gy + other.h && brick.gy > other.gy) {
+            const brickCenterX = brick.gx + brick.w/2;
+            const otherCenterX = other.gx + other.w/2;
+            const dx = Math.abs(brickCenterX - otherCenterX);
+            
+            if(dx < (brick.w + other.w)/2) {
+              brick.gy = other.gy + other.h;
+              brick.velocity.y = 0;
+              brick.velocity.x *= FRICTION;
+              brick.angularVelocity *= FRICTION;
+              brick.falling = false;
+              brick.snapped = true;
+            }
+          }
+        }
+        
+        // Update mesh position
+        brick.mesh.position.x = (brick.gx + brick.w/2) * STUD;
+        brick.mesh.position.y = brick.gy * STUD;
+        brick.mesh.rotation.z = brick.rotation;
+      }
+    }
+    
+    // Check stability of stacked bricks
+    checkStability();
+  }
+  
+  function checkStability() {
+    for(const brick of worldBricks) {
+      if(brick.falling || brick.gy === 0) continue;
+      
+      // Check if brick is still supported
+      let supported = false;
+      const brickCenterX = brick.gx + brick.w/2;
+      
+      for(const other of worldBricks) {
+        if(other === brick || other.falling) continue;
+        
+        // Check if brick is sitting on top of other
+        if(Math.abs(brick.gy - (other.gy + other.h)) < 0.1) {
+          // Check horizontal overlap
+          if(brick.gx < other.gx + other.w && brick.gx + brick.w > other.gx) {
+            supported = true;
+            
+            // Check balance - if less than 30% overlap, start tipping
+            const overlapLeft = Math.max(brick.gx, other.gx);
+            const overlapRight = Math.min(brick.gx + brick.w, other.gx + other.w);
+            const overlapWidth = overlapRight - overlapLeft;
+            const overlapRatio = overlapWidth / brick.w;
+            
+            if(overlapRatio < 0.3) {
+              // Start tipping
+              const centerOfMass = (brick.gx + brick.w/2);
+              const supportCenter = (overlapLeft + overlapRight) / 2;
+              const torque = (centerOfMass - supportCenter) * 0.001;
+              brick.angularVelocity += torque;
+              
+              if(Math.abs(brick.angularVelocity) > 0.01) {
+                brick.falling = true;
+                brick.snapped = false;
+                brick.velocity.y = -0.1;
+              }
+            }
+            break;
+          }
+        }
+      }
+      
+      // If not supported, start falling
+      if(!supported) {
+        brick.falling = true;
+        brick.snapped = false;
+      }
+    }
+  }
+
   function loop(){
     // Animate preview bricks
     for(const preview of previewAnimations) {
       preview.brick.rotation.y += 0.01;
       preview.renderer.render(preview.scene, preview.camera);
     }
+    
+    // Update player in game mode
+    if(gameMode && !gameOver) {
+      updatePlayer();
+      updateAliens(0.016);
+      updateBullets(0.016);
+      updateExplosions(0.016);
+    } else if(gameMode && gameOver) {
+      // Still update explosions when game over
+      updateExplosions(0.016);
+    }
+    
+    // Update physics
+    updatePhysics();
     
     // Main scene
     renderer.render(scene,camera);

@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>2D Lego Builder — Fixed Alignment and Snap</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f5f7; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #ui { position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip { cursor: pointer; padding: 6px 10px; border-radius: 10px; border: 1px solid rgba(0,0,0,0.15); background: #fff; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div id="ui"></div>
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script>
+  const STUD = 16;
+  const STUD_H = STUD * 0.3;
+  const DEPTH = 2;
+
+  const COLORS = [0x264653, 0x2a9d8f, 0xe9c46a, 0xf4a261, 0xe76f51, 0x8ecae6, 0x219ebc, 0xffb703, 0xfb8500, 0x8338ec];
+  const randColor = () => COLORS[Math.floor(Math.random()*COLORS.length)];
+
+  const CATALOG = [
+    {w:1,h:1}, {w:2,h:1}, {w:3,h:1}, {w:4,h:1},
+    {w:1,h:2}, {w:2,h:2}, {w:3,h:2}, {w:4,h:2}
+  ];
+
+  const renderer = new THREE.WebGLRenderer({antialias:true,alpha:true});
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  // Use perspective camera for 2.5D effect
+  const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 10000);
+  camera.position.set(0, 0, 800);
+  camera.lookAt(0, 0, 0);
+  scene.add(new THREE.AmbientLight(0xffffff, 3)); // overexpose a bit
+
+  const groundGroup = new THREE.Group();
+  scene.add(groundGroup);
+
+  // Camera pan state
+  const cameraTarget = new THREE.Vector3(0, 0, 0);
+  let isPanning = false;
+  let panStart = new THREE.Vector2();
+  let panDelta = new THREE.Vector2();
+
+  function drawGround() {
+    groundGroup.clear();
+    const studMat = new THREE.MeshLambertMaterial({ color: 0x9aa0a6 });
+    const studGeom = new THREE.BoxGeometry(STUD*0.7, STUD_H, DEPTH);
+    // Calculate visible range based on camera position and FOV
+    const vFOV = camera.fov * Math.PI / 180;
+    const height = 2 * Math.tan(vFOV / 2) * camera.position.z;
+    const width = height * camera.aspect;
+    const left = Math.floor((cameraTarget.x - width/2)/STUD)-4;
+    const right = Math.ceil((cameraTarget.x + width/2)/STUD)+4;
+    for (let x = left; x <= right; x++) {
+      const s = new THREE.Mesh(studGeom, studMat);
+      s.position.set(x*STUD + STUD/2, -STUD_H/2, 0);
+      groundGroup.add(s);
+    }
+  }
+
+  function fit() {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+    drawGround();
+  }
+  window.addEventListener('resize', fit);
+  fit();
+
+  const worldBricks = [];
+
+  function makeBrickMesh(w,h,color){
+    const group = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(w*STUD,h*STUD,DEPTH), new THREE.MeshLambertMaterial({color}));
+    body.position.y = h*STUD/2 - STUD_H/2;
+    group.add(body);
+
+    const studMat = new THREE.MeshLambertMaterial({color:color});
+    // Use CylinderGeometry for realistic studs
+    // Parameters: radiusTop, radiusBottom, height, radialSegments
+    const studGeom = new THREE.CylinderGeometry(STUD*0.35, STUD*0.35, DEPTH, 16);
+    // Rotate cylinder to lie along the Z axis (depth direction)
+    // studGeom.rotateX(Math.PI / 2);
+    
+    for(let i=0;i<w;i++){
+      const stud = new THREE.Mesh(studGeom,studMat);
+      stud.position.set((i-(w/2-0.5))*STUD,h*STUD-STUD_H/2,0);
+      group.add(stud);
+    }
+    return group;
+  }
+
+  function topStuds(){
+    const studs=[];
+    for(const b of worldBricks){
+      for(let i=0;i<b.w;i++) studs.push({x:b.gx+i,y:b.gy+b.h});
+    }
+    return studs;
+  }
+
+function nearestAttach(gx,gy,w){
+    const studs = topStuds();
+    // Generate all attachment points: existing top studs + ground studs for each X position
+    const attachPoints = [];
+    
+    // Add all existing top studs as attachment points
+    studs.forEach(s => attachPoints.push(s));
+    
+    // Add ground attachment points for each X position under the brick
+    for(let x = gx; x < gx + w; x++) {
+      attachPoints.push({x: x, y: 0});
+    }
+    
+    if(attachPoints.length === 0) return { x: gx, y: 0 }; // fallback
+    
+    // Generate all bottom studs of the dragging brick (relative to gx)
+    const bottomStuds = [];
+    for(let i = 0; i < w; i++) {
+      bottomStuds.push({x: gx + i, y: gy, offset: i}); // offset tracks which stud this is (0 = leftmost)
+    }
+    
+    console.log("Bottom studs:", bottomStuds, "Attach points:", attachPoints);
+    
+    // Find the closest attachment point to any bottom stud
+    let minDist = Infinity;
+    let bestAttach = null;
+    let bestBottomStud = null;
+    
+    for(const bottomStud of bottomStuds) {
+      for(const attach of attachPoints) {
+        // Calculate true Euclidean distance
+        const dx = bottomStud.x - attach.x;
+        const dy = bottomStud.y - attach.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        if(dist < minDist) {
+          minDist = dist;
+          bestAttach = attach;
+          bestBottomStud = bottomStud;
+        }
+      }
+    }
+    
+    // Calculate the brick's gx position based on which bottom stud is attaching
+    const finalGx = bestAttach.x - bestBottomStud.offset;
+    
+    console.log("Best attachment:", bestAttach, "Bottom stud offset:", bestBottomStud.offset, "Final gx:", finalGx);
+    return { x: finalGx, y: bestAttach.y };
+}
+
+  function highestAttachY(gx,w){
+    let best=0;
+    const studs=topStuds();
+    for(let x=gx;x<gx+w;x++){
+      const hits=studs.filter(s=>s.x===x);
+      if(hits.length) best=Math.max(best,Math.max(...hits.map(h=>h.y)));
+    }
+    return best;
+  }
+
+  function overlaps(gx,gy,w,h){
+    for(const b of worldBricks){
+      if(gx < b.gx + b.w && gx + w > b.gx && gy < b.gy + b.h && gy + h > b.gy) return true;
+    }
+    return false;
+  }
+
+  function place(gx,gy,w,h,color){
+    const mesh=makeBrickMesh(w,h,color);
+    mesh.position.set((gx+w/2)*STUD,(gy)*STUD,0);
+    scene.add(mesh);
+    worldBricks.push({gx,gy,w,h,mesh});
+  }
+
+  let dragging=null; const pointer={x:0,y:0};
+
+  function toWorld(e){
+    const r=renderer.domElement.getBoundingClientRect();
+    const cx=(e.clientX??e.touches[0].clientX)-r.left;
+    const cy=(e.clientY??e.touches[0].clientY)-r.top;
+    const x=(cx/r.width)*2-1; const y=-(cy/r.height)*2+1;
+    
+    // Create a raycaster to find the intersection with z=0 plane
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
+    
+    // Intersect with the z=0 plane
+    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    const intersect = new THREE.Vector3();
+    raycaster.ray.intersectPlane(plane, intersect);
+    
+    return {x: intersect.x, y: intersect.y};
+  }
+
+  function getPointerPos(e) {
+    const r=renderer.domElement.getBoundingClientRect();
+    const cx=(e.clientX??e.touches[0].clientX)-r.left;
+    const cy=(e.clientY??e.touches[0].clientY)-r.top;
+    return new THREE.Vector2(cx, cy);
+  }
+
+  function spawn(w,h){
+    const color=randColor();
+    const mesh=makeBrickMesh(w,h,color);
+    mesh.position.set(pointer.x,pointer.y,0);
+    scene.add(mesh);
+    dragging={w,h,color,mesh};
+  }
+
+  function drop(){
+    if(!dragging)return;
+    const {w,h,color,mesh}=dragging;
+    const attach=nearestAttach(Math.round(pointer.x/STUD - w/2),Math.round(pointer.y/STUD),w);
+    const gy=attach.y;
+    const gx = attach.x;
+    if(overlaps(gx,gy,w,h)){scene.remove(mesh);dragging=null;return;}
+    place(gx,gy,w,h,color);
+    scene.remove(mesh);dragging=null;
+  }
+
+  // Event handlers for dragging bricks and panning
+  renderer.domElement.addEventListener('pointerdown', e => {
+    if(dragging) return; // Don't pan while dragging a brick
+    isPanning = true;
+    panStart = getPointerPos(e);
+  });
+
+  renderer.domElement.addEventListener('pointermove', e => {
+    const p = toWorld(e);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    
+    if(dragging) {
+      dragging.mesh.position.set(p.x, p.y, 0);
+    } else if(isPanning) {
+      const current = getPointerPos(e);
+      panDelta.subVectors(current, panStart);
+      
+      // Convert screen space delta to world space
+      const vFOV = camera.fov * Math.PI / 180;
+      const height = 2 * Math.tan(vFOV / 2) * camera.position.z;
+      const width = height * camera.aspect;
+      
+      const worldDeltaX = -(panDelta.x / renderer.domElement.clientWidth) * width;
+      const worldDeltaY = (panDelta.y / renderer.domElement.clientHeight) * height;
+      
+      cameraTarget.x += worldDeltaX;
+      cameraTarget.y += worldDeltaY;
+      camera.position.x = cameraTarget.x;
+      camera.position.y = cameraTarget.y;
+      camera.lookAt(cameraTarget);
+      
+      panStart.copy(current);
+      drawGround();
+    }
+  });
+
+  renderer.domElement.addEventListener('pointerup', e => {
+    if(isPanning) {
+      isPanning = false;
+    } else {
+      drop();
+    }
+  });
+
+  const ui=document.getElementById('ui');
+  CATALOG.forEach(({w,h})=>{
+    const b=document.createElement('button');
+    b.className='chip';
+    b.textContent=`${w}x${h}`;
+    b.onclick=()=>spawn(w,h);
+    ui.appendChild(b);
+  });
+
+  function loop(){renderer.render(scene,camera);requestAnimationFrame(loop);}loop();
+  </script>
+</body>
+</html>

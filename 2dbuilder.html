@@ -92,15 +92,16 @@
   // Vibrant, fun LEGO-style colors
   const COLORS = [
     0xFF0000, // Bright Red
-    0x0055BF, // LEGO Blue
-    // 0xFFD700, // Gold/Yellow
-    0x00A650, // Bright Green
-    0xFF6700, // Orange
-    0xA83D9B, // Purple/Magenta
-    0x00BFFF, // Sky Blue
-    0xFF1493, // Hot Pink
-    0x32CD32, // Lime Green
+    0xFF9700, // Orange
     0xFFFF00, // Yellow
+    0x0055BF, // LEGO Blue
+    0x00BFFF, // Sky Blue
+    0x00A650, // Bright Green
+    0x32CD32, // Lime Green
+    0xA83D9B, // Purple/Magenta
+    0xFF1493, // Hot Pink
+
+    // 0xFFD700, // Gold/Yellow
     // 0xFF4500, // Red-Orange
     // 0x9400D3, // Dark Violet
   ];
@@ -161,7 +162,7 @@
   
   // Subtle rim light
   const rimLight = new THREE.DirectionalLight(0xFFE8D0, 0.3);
-  rimLight.position.set(0, -200, 800);
+  rimLight.position.set(0, -300, 800);
   scene.add(rimLight);
 
   const groundGroup = new THREE.Group();
@@ -801,6 +802,85 @@
   CATALOG.forEach(({w,h})=>{
     ui.appendChild(createBrickPreview(w, h));
   });
+
+  // ============================================================================
+  // STARTER STRUCTURE
+  // ============================================================================
+
+  // Create a random cluster of bricks to get the user started
+  function createStarterStructure() {
+    const numBricks = 5 + Math.floor(Math.random() * 6); // 5-10 bricks
+    const usedPositions = new Set(); // Track occupied positions to avoid overlaps
+    
+    // Helper to check if position is available
+    const isAvailable = (gx, gy, w, h) => {
+      for(let x = gx; x < gx + w; x++) {
+        for(let y = gy; y < gy + h; y++) {
+          if(usedPositions.has(`${x},${y}`)) return false;
+        }
+      }
+      return true;
+    };
+    
+    // Mark positions as used
+    const markUsed = (gx, gy, w, h) => {
+      for(let x = gx; x < gx + w; x++) {
+        for(let y = gy; y < gy + h; y++) {
+          usedPositions.add(`${x},${y}`);
+        }
+      }
+    };
+    
+    // Start with a base layer (wider bricks)
+    const baseBricks = [
+      {w: 4, h: 1},
+      {w: 3, h: 1},
+      {w: 2, h: 1}
+    ];
+    
+    let placed = 0;
+    
+    // Place 2-3 base bricks on the ground
+    const numBaseBricks = 2 + Math.floor(Math.random() * 2); // 2-3 base bricks
+    for(let i = 0; i < numBaseBricks && placed < numBricks; i++) {
+      const brickType = baseBricks[Math.floor(Math.random() * baseBricks.length)];
+      const w = brickType.w;
+      const h = brickType.h;
+      
+      // Try to place near the origin (between -4 and 4)
+      const gx = -2 + Math.floor(Math.random() * 5);
+      const gy = 0;
+      
+      if(isAvailable(gx, gy, w, h)) {
+        place(gx, gy, w, h, randColor());
+        markUsed(gx, gy, w, h);
+        placed++;
+      }
+    }
+    
+    // Place remaining bricks on top
+    const attempts = 50; // Max attempts to place remaining bricks
+    for(let attempt = 0; attempt < attempts && placed < numBricks; attempt++) {
+      // Pick a random brick size
+      const brickType = CATALOG[Math.floor(Math.random() * CATALOG.length)];
+      const w = brickType.w;
+      const h = brickType.h;
+      
+      // Try to place on top of existing bricks
+      const gx = -4 + Math.floor(Math.random() * 9); // -4 to 4
+      const gy = highestAttachY(gx, w);
+      
+      // Only place if it's on the ground or on top of something, and doesn't overlap
+      if(gy >= 0 && gy <= 3 && isAvailable(gx, gy, w, h) && !overlaps(gx, gy, w, h)) {
+        place(gx, gy, w, h, randColor());
+        markUsed(gx, gy, w, h);
+        placed++;
+      }
+    }
+  }
+  
+  // Create the starter structure on load
+  createStarterStructure();
 
   // ============================================================================
   // ANIMATION LOOP

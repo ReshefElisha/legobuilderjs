@@ -6,8 +6,36 @@
   <title>2D Lego Builder — Fixed Alignment and Snap</title>
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f5f7; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
-    #ui { position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; gap: 8px; flex-wrap: wrap; }
-    .chip { cursor: pointer; padding: 6px 10px; border-radius: 10px; border: 1px solid rgba(0,0,0,0.15); background: #fff; font-size: 12px; }
+    #ui { position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; gap: 6px; flex-wrap: wrap; max-width: 140px; }
+    .brick-button { 
+      cursor: pointer; 
+      border-radius: 8px; 
+      border: 1px solid rgba(0,0,0,0.15); 
+      background: #fff; 
+      padding: 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    .brick-button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    .brick-button:active {
+      transform: translateY(0);
+    }
+    .brick-canvas {
+      width: 40px;
+      height: 40px;
+      display: block;
+    }
+    .brick-label {
+      font-size: 9px;
+      color: #666;
+      font-weight: 500;
+    }
   </style>
 </head>
 <body>
@@ -298,11 +326,23 @@ function nearestAttach(gx,gy,w){
   }
 
   function spawn(w,h){
+    // Clean up any previous dragging mesh
+    if(dragging && dragging.mesh) {
+      scene.remove(dragging.mesh);
+    }
+    // Clean up any dependent meshes
+    if(draggedBrickGroup && draggedBrickGroup.dependentMeshes) {
+      for(const depMesh of draggedBrickGroup.dependentMeshes) {
+        scene.remove(depMesh.mesh);
+      }
+    }
+    
     const color=randColor();
     const mesh=makeBrickMesh(w,h,color);
     mesh.position.set(pointer.x,pointer.y,0);
     scene.add(mesh);
     dragging={w,h,color,mesh};
+    draggedBrickGroup=null;
   }
 
   function drop(){
@@ -456,15 +496,80 @@ function nearestAttach(gx,gy,w){
   });
 
   const ui=document.getElementById('ui');
+  
+  // Track all preview animations
+  const previewAnimations = [];
+  
+  // Create 3D preview for each brick type
+  function createBrickPreview(w, h) {
+    const container = document.createElement('div');
+    container.className = 'brick-button';
+    
+    // Create canvas for 3D preview
+    const canvas = document.createElement('canvas');
+    canvas.className = 'brick-canvas';
+    canvas.width = 80;
+    canvas.height = 80;
+    
+    // Setup mini scene for preview
+    const previewScene = new THREE.Scene();
+    const previewCamera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
+    previewCamera.position.set(w*STUD*0.8, h*STUD*0.8, w*STUD*1.2);
+    previewCamera.lookAt(0, 0, 0);
+    
+    const previewRenderer = new THREE.WebGLRenderer({canvas, antialias: true, alpha: true});
+    previewRenderer.setSize(80, 80);
+    previewRenderer.setClearColor(0x000000, 0);
+    
+    // Lighting for preview
+    previewScene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const previewLight = new THREE.DirectionalLight(0xffffff, 2);
+    previewLight.castShadow = true;
+    previewLight.position.set(10, 10, 10);
+    previewScene.add(previewLight);
+    
+    // Create gray brick
+    const GRAY = 0xEEEEEE;
+    const previewBrick = makeBrickMesh(w, h, GRAY);
+    previewBrick.position.y = -h*STUD/2; // Center vertically
+    previewScene.add(previewBrick);
+    
+    // Add animation for this preview
+    previewAnimations.push({
+      brick: previewBrick,
+      renderer: previewRenderer,
+      scene: previewScene,
+      camera: previewCamera
+    });
+    
+    // Add label
+    const label = document.createElement('div');
+    label.className = 'brick-label';
+    label.textContent = `${w}×${h}`;
+    
+    container.appendChild(canvas);
+    container.appendChild(label);
+    container.onclick = () => spawn(w, h);
+    
+    return container;
+  }
+  
   CATALOG.forEach(({w,h})=>{
-    const b=document.createElement('button');
-    b.className='chip';
-    b.textContent=`${w}x${h}`;
-    b.onclick=()=>spawn(w,h);
-    ui.appendChild(b);
+    ui.appendChild(createBrickPreview(w, h));
   });
 
-  function loop(){renderer.render(scene,camera);requestAnimationFrame(loop);}loop();
+  function loop(){
+    // Animate preview bricks
+    for(const preview of previewAnimations) {
+      preview.brick.rotation.y += 0.01;
+      preview.renderer.render(preview.scene, preview.camera);
+    }
+    
+    // Main scene
+    renderer.render(scene,camera);
+    requestAnimationFrame(loop);
+  }
+  loop();
   </script>
 </body>
 </html>
